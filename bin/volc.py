@@ -1,8 +1,10 @@
 """stream.py 和 voices.py 共用的部分：火山接口、缓存路径、音色列表。只用标准库。"""
 import base64
+import codecs
 import hashlib
 import json
 import os
+import time
 import urllib.request
 import uuid
 
@@ -13,6 +15,8 @@ RUN_DIR = os.path.expanduser('~/.config/volc-tts')
 KEY_FILE = os.path.join(RUN_DIR, 'api_key')
 VOICES_FILE = os.path.join(RUN_DIR, 'voices.json')
 CACHE_DIR = os.path.expanduser('~/.cache/volc-tts')
+LOG_FILE = os.path.join(CACHE_DIR, 'stream.log')  # 朗读过程日志，排查用
+LOG_MAX_BYTES = 1024 * 1024  # 超过就把旧的挪成 stream.log.1，只留两份
 DEFAULT_VOICE = {'id': 'zh_female_zhixingnv_uranus_bigtts', 'name': '知性女声 2.0', 'resource': 'seed-tts-2.0'}
 MISMATCH = 55000000  # 音色不存在，或音色和资源对不上
 
@@ -32,15 +36,33 @@ def cache_path(speaker, text):
     return os.path.join(CACHE_DIR, hashlib.sha256(f'{speaker}\n{text}'.encode()).hexdigest() + '.pcm')
 
 
+def log_to_file(line):
+    """追加一行到 LOG_FILE；写不进去也不影响朗读。"""
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            os.replace(LOG_FILE, LOG_FILE + '.1')
+        with open(LOG_FILE, 'a') as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{os.getpid()}] {line}\n")
+    except OSError:
+        pass
+
+
 def iter_objects(resp):
-    """服务端返回首尾相接的 JSON 对象（不一定有换行），边读边切出完整对象。"""
+    """服务端返回首尾相接的 JSON 对象（不一定有换行），边读边切出完整对象。
+
+    网络分块会切在汉字的字节中间（UTF-8 一个汉字 3 字节），所以用增量解码器：
+    半个字先留着，等下一块到了再拼完整。
+    """
     dec = json.JSONDecoder()
+    text = codecs.getincrementaldecoder('utf-8')()
     buf = ''
     while True:
         data = resp.read1(65536)
         if not data:
+            buf += text.decode(b'', final=True)  # 结尾还剩半个字就会在这里报错，说明数据真的不完整
             break
-        buf += data.decode('utf-8')
+        buf += text.decode(data)
         while True:
             buf = buf.lstrip()
             if not buf:

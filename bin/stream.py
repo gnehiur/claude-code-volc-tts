@@ -51,7 +51,9 @@ out_lock = threading.Lock()
 
 
 def log(msg):
-    print(f'[{time.monotonic() - t0:5.2f}s] {msg}', file=sys.stderr, flush=True)
+    line = f'[{time.monotonic() - t0:5.2f}s] {msg}'
+    print(line, file=sys.stderr, flush=True)
+    volc.log_to_file(line)
 
 
 def emit(line):
@@ -248,6 +250,7 @@ def main():
     log(f'音色 {speaker}（{resource}）')
     cache_path = volc.cache_path(speaker, text)
 
+    log(f'开始朗读，{len(text)} 字')
     stop_previous()
     try:
         os.remove(SOCK)  # 上一个 mpv 留下的遥控口
@@ -340,6 +343,7 @@ def main():
     release_pid()
     log('播放结束')
     if errors:
+        log(f'失败：{type(errors[0]).__name__}: {errors[0]}')
         print(f'火山朗读失败：{errors[0]}', file=sys.stderr)
         sys.exit(1)
 

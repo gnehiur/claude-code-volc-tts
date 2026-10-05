@@ -20,6 +20,8 @@ import volc
 
 
 def reply(**kw):
+    if not kw.get('ok') or kw.get('added'):  # 失败和添加记进朗读日志；list / use 太频繁，不记
+        volc.log_to_file(f"voices.py {' '.join(sys.argv[1:])} → {'成功' if kw.get('ok') else '失败：' + kw.get('error', '')}")
     print(json.dumps(kw, ensure_ascii=False))
 
 

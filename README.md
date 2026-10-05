@@ -104,6 +104,14 @@ bin/ctl.py ◀── ⏸ ▶️ ⏹ 倍速 按钮
 - 朗读前会去掉代码块、图片和链接网址；剩下的 Markdown 符号交给火山服务端过滤（`disable_markdown_filter`）。
 - `bin/ctl.py` 在终端里也能用：`python3 bin/ctl.py pause`、`python3 bin/ctl.py speed 1.25`。
 
+## 排查问题
+
+每次朗读和添加音色的过程都记在 `~/.cache/volc-tts/stream.log`（音色、请求了几段、首声时间、错误原因），超过 1MB 自动轮换成 `stream.log.1`：
+
+```bash
+tail -20 ~/.cache/volc-tts/stream.log
+```
+
 ## 已知局限
 
 - **仅 macOS。**
