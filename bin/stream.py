@@ -2,6 +2,7 @@
 """从 stdin 读要念的文字，流式调用火山引擎豆包语音，收到一块 PCM 就写进 mpv 播放。
 
 用法：echo "你好" | python3 stream.py [音色ID]
+不给音色 ID 时用 ~/.config/volc-tts/voices.json 里的当前音色（由 voices.py 管理）。
 只用标准库；播放器是 Homebrew 的 mpv。被 SIGTERM/SIGINT 时连同 mpv 一起退出（= 停止朗读）。
 
 规则：
@@ -17,9 +18,7 @@ stdout 协议（给 mod 读，一行一条）：
   STATE paused    已暂停
   SPEED 1.25      当前倍速
 """
-import base64
 import glob
-import hashlib
 import json
 import os
 import queue
@@ -30,21 +29,17 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
-import uuid
 
-ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
-RESOURCE_ID = 'seed-tts-2.0'
-SPEAKER = sys.argv[1] if len(sys.argv) > 1 else 'zh_female_zhixingnv_uranus_bigtts'
-RATE = 24000
+import volc
+
 CHUNK_CHARS = 800  # 单次请求的最大字数
 PAUSE_LIMIT = 30 * 60  # 暂停超过这么久自动结束
-RUN_DIR = os.path.expanduser('~/.config/volc-tts')
-KEY_FILE = os.path.join(RUN_DIR, 'api_key')
+RUN_DIR = volc.RUN_DIR
 PID_FILE = os.path.join(RUN_DIR, 'playing.pid')
 SOCK = os.path.join(RUN_DIR, 'mpv.sock')
 SPEED_FILE = os.path.join(RUN_DIR, 'speed')
-CACHE_DIR = os.path.expanduser('~/.cache/volc-tts')
+CACHE_DIR = volc.CACHE_DIR
+RATE = volc.RATE
 CACHE_DAYS = 7
 CACHE_MAX_BYTES = 200 * 1024 * 1024
 APP_LOG = os.environ.get('VOLC_TTS_APP_LOG') or os.path.expanduser('~/Library/Logs/Claude/main.log')  # 环境变量仅供测试
@@ -237,54 +232,21 @@ def split(text):
     return parts
 
 
-def iter_objects(resp):
-    """服务端返回首尾相接的 JSON 对象（不一定有换行），边读边切出完整对象。"""
-    dec = json.JSONDecoder()
-    buf = ''
-    while True:
-        data = resp.read1(65536)
-        if not data:
-            break
-        buf += data.decode('utf-8')
-        while True:
-            buf = buf.lstrip()
-            if not buf:
-                break
-            try:
-                obj, end = dec.raw_decode(buf)
-            except json.JSONDecodeError:
-                break  # 对象还没收全
-            yield obj
-            buf = buf[end:]
-
-
-def fetch(text, key, out):
-    req = urllib.request.Request(ENDPOINT, method='POST', headers={
-        'X-Api-Key': key,
-        'X-Api-Resource-Id': RESOURCE_ID,
-        'X-Api-Request-Id': str(uuid.uuid4()),
-        'Content-Type': 'application/json',
-    }, data=json.dumps({'req_params': {
-        'text': text,
-        'speaker': SPEAKER,
-        'audio_params': {'format': 'pcm', 'sample_rate': RATE},
-        'additions': json.dumps({'disable_markdown_filter': True, 'disable_emoji_filter': True}),
-    }}).encode())
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        for obj in iter_objects(resp):
-            if obj.get('code') not in (0, 20000000):
-                raise RuntimeError(f"火山返回错误 {obj.get('code')}: {obj.get('message')}")
-            if obj.get('data'):
-                out(base64.b64decode(obj['data']))
-
-
 def main():
     text = sys.stdin.read().strip()
     if not text:
         return
     os.makedirs(CACHE_DIR, exist_ok=True)
-    cache_path = os.path.join(
-        CACHE_DIR, hashlib.sha256(f'{SPEAKER}\n{text}'.encode()).hexdigest() + '.pcm')
+    voices = volc.load_voices()
+    if len(sys.argv) > 1:
+        speaker = sys.argv[1]
+        known = volc.find_voice(voices, speaker)
+        resource = known['resource'] if known else volc.RESOURCES[0]
+    else:
+        voice = volc.find_voice(voices, voices['current'])
+        speaker, resource = voice['id'], voice['resource']
+    log(f'音色 {speaker}（{resource}）')
+    cache_path = volc.cache_path(speaker, text)
 
     stop_previous()
     try:
@@ -339,15 +301,14 @@ def main():
                     while block := f.read(48000):
                         chunks.put(block)
                 return
-            with open(KEY_FILE) as f:
-                key = f.read().strip()
+            key = volc.read_key()
             with open(tmp, 'wb') as cache:
                 def out(block):
                     cache.write(block)
                     chunks.put(block)
                 for i, part in enumerate(split(text)):
                     log(f'请求第 {i + 1} 段（{len(part)} 字）')
-                    fetch(part, key, out)
+                    volc.fetch(part, speaker, resource, key, out)
             os.replace(tmp, cache_path)  # 全部下载成功才算缓存
             prune_cache()
         except Exception as e:  # noqa: BLE001

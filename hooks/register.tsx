@@ -1,24 +1,31 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { TtsNow } from '../types'
+import type { TtsNow, TtsVoiceList } from '../types'
 
 // 火山引擎豆包语音：单向流式合成（HTTP Chunked）
 const ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
-const RESOURCE_ID = 'seed-tts-2.0'
-const SPEAKER = 'zh_female_zhixingnv_uranus_bigtts' // 知性女声 2.0
+const DEFAULT_VOICE = { id: 'zh_female_zhixingnv_uranus_bigtts', resource: 'seed-tts-2.0' } // 知性女声 2.0
+const VOICES_FILE = '.config/volc-tts/voices.json' // 相对 $HOME，音色列表，由 bin/voices.py 维护
 const KEY_FILE = '.config/volc-tts/api_key' // 相对 $HOME，权限 600
 const SPEED_FILE = '.config/volc-tts/speed' // 相对 $HOME，记住上次的倍速
 const CHUNK_CHARS = 800 // 后备方案每次请求的最大字数，长回复切段依次合成
 const FIRST_CHARS = 60 // 后备方案第一段的字数上限
 const PYTHON = '/usr/bin/python3'
 const SPEEDS = [1, 1.25, 1.5, 2] // 倍速按钮依次循环
+const VOICE_PANE = 'tts-voice'
+const SAMPLE_KEY = 'voice-sample' // 试听用的朗读，不属于任何一段回复
 
 // 会话级状态：哪一段在念、什么状态；当前倍速。写入会让读它的按钮重画
 const now = atom({ plugin: 'tts', key: 'now' } as const, null)
 const speed = atom({ plugin: 'tts', key: 'speed' } as const, 1)
 const finals = atom({ plugin: 'tts', key: 'finals' } as const, [])
 const FINALS_MAX = 200 // 只记最近这么多轮
+const voices = atom({ plugin: 'tts', key: 'voices' } as const, null)
+const draftId = atom({ plugin: 'tts', key: 'draftId' } as const, '')
+const draftName = atom({ plugin: 'tts', key: 'draftName' } as const, '')
+const voiceMsg = atom({ plugin: 'tts', key: 'voiceMsg' } as const, '')
+const voiceBusy = atom({ plugin: 'tts', key: 'voiceBusy' } as const, false)
 
 // 每次开始朗读加一；旧的朗读循环发现自己不是最新一轮，就不再改状态
 let run = 0
@@ -104,8 +111,20 @@ function joinAudio(body: string): string {
 const cache = new Map<string, string>() // 后备模式：文本 → mp3 base64，避免重复点击重复计费
 let apiKey: string | undefined
 
+// 后备模式用的当前音色：直接读 voices.json，读不到就用默认音色
+async function currentVoice($: any): Promise<{ id: string; resource: string }> {
+  try {
+    const home = await $.env.get('HOME')
+    const list = JSON.parse(await $.fs.read(`${home}/${VOICES_FILE}`))
+    return list.voices.find((v: { id: string }) => v.id === list.current) ?? DEFAULT_VOICE
+  } catch {
+    return DEFAULT_VOICE
+  }
+}
+
 async function synth($: any, text: string): Promise<string> {
-  const hit = cache.get(text)
+  const voice = await currentVoice($)
+  const hit = cache.get(`${voice.id}\n${text}`)
   if (hit) return hit
   if (!apiKey) {
     const home = await $.env.get('HOME')
@@ -115,14 +134,14 @@ async function synth($: any, text: string): Promise<string> {
     method: 'POST',
     headers: {
       'X-Api-Key': apiKey!,
-      'X-Api-Resource-Id': RESOURCE_ID,
+      'X-Api-Resource-Id': voice.resource,
       'X-Api-Request-Id': crypto.randomUUID(),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       req_params: {
         text,
-        speaker: SPEAKER,
+        speaker: voice.id,
         audio_params: { format: 'mp3', sample_rate: 24000 },
         additions: JSON.stringify({ disable_markdown_filter: true, disable_emoji_filter: true }),
       },
@@ -130,7 +149,7 @@ async function synth($: any, text: string): Promise<string> {
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.text.slice(0, 200)}`)
   const audio = joinAudio(res.text)
-  cache.set(text, audio)
+  cache.set(`${voice.id}\n${text}`, audio)
   return audio
 }
 
@@ -205,7 +224,7 @@ async function speakBuffered($: any, text: string, key: string, id: number) {
 // 主方案：bin/stream.py 流式合成，mpv 边收边播；它在 stdout 报告状态（见 stream.py 顶部）
 async function speakStreaming($: any, text: string, key: string, id: number) {
   const child = $.process.spawn({
-    argv: [PYTHON, `${$.plugin.root}/bin/stream.py`, SPEAKER],
+    argv: [PYTHON, `${$.plugin.root}/bin/stream.py`],
     input: text,
   })
   let out = ''
@@ -280,6 +299,77 @@ async function pressSpeed($: any) {
   await ctl($, 'speed', String(x))
 }
 
+// 跑 bin/voices.py，它输出一行 JSON（含最新的音色列表），顺手刷新面板
+async function voicesCmd($: any, ...args: string[]) {
+  const { stdout, stderr } = await $.process.run([PYTHON, `${$.plugin.root}/bin/voices.py`, ...args], {
+    timeoutMs: 60000,
+  })
+  try {
+    const res = JSON.parse(stdout.trim().split('\n').pop() || '{}')
+    if (res.voices) await update($, voices, () => ({ current: res.current, voices: res.voices }))
+    return res
+  } catch {
+    return { ok: false, error: (stderr || stdout).slice(-200) || 'voices.py 没有输出' }
+  }
+}
+
+async function openVoicePane($: any) {
+  await update($, voiceMsg, () => '')
+  await voicesCmd($, 'list')
+  await $.ui.open({ id: VOICE_PANE, title: '🎙 朗读音色', focus: true })
+}
+
+function voiceName(list: TtsVoiceList | null, id: string): string {
+  return list?.voices.find(v => v.id === id)?.name ?? id
+}
+
+async function pickVoice($: any, id: string) {
+  const res = await voicesCmd($, 'use', id)
+  await update($, voiceMsg, () =>
+    res.ok ? `✅ 已切换为「${voiceName(res, id)}」，下一次朗读生效` : `❌ ${res.error}`,
+  )
+}
+
+async function previewVoice($: any) {
+  const list = await read($, voices)
+  if (!list) return
+  await start($, `你好，我是${voiceName(list, list.current)}。`, SAMPLE_KEY)
+}
+
+async function removeVoice($: any) {
+  const list = await read($, voices)
+  if (!list) return
+  const name = voiceName(list, list.current)
+  const res = await voicesCmd($, 'remove', list.current)
+  await update($, voiceMsg, () => (res.ok ? `🗑 已删除「${name}」` : `❌ ${res.error}`))
+}
+
+// 验证并保存：voices.py 真的合成一句试听语，成功才保存；随后播放这句（已在缓存里，不再计费）
+async function addVoice($: any) {
+  if (await read($, voiceBusy)) return
+  const id = (await read($, draftId)).trim()
+  const name = (await read($, draftName)).trim()
+  if (!id) {
+    await update($, voiceMsg, () => '请先填音色 ID')
+    return
+  }
+  await update($, voiceBusy, () => true)
+  await update($, voiceMsg, () => '⏳ 正在向火山验证…')
+  try {
+    const res = await voicesCmd($, 'add', id, name)
+    if (!res.ok) {
+      await update($, voiceMsg, () => `❌ ${res.error}`)
+      return
+    }
+    await update($, draftId, () => '')
+    await update($, draftName, () => '')
+    await update($, voiceMsg, () => `✅ 已添加「${res.added.name}」，并切换为当前音色`)
+    void start($, res.sample, SAMPLE_KEY)
+  } finally {
+    await update($, voiceBusy, () => false)
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -288,7 +378,63 @@ export const register: Register = on => {
     $.ui.status(undefined)
     await loadSpeed($)
     await loadHistoryFinals($)
+    await $.command.register({ name: 'voice', description: '打开朗读音色面板：切换、试听、添加火山音色' })
     return started
+  })
+
+  on('command.run', { command: 'voice' }, async $ => {
+    await openVoicePane($)
+    return { text: '已打开朗读音色面板。' }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: VOICE_PANE }, async ($, e) => {
+    const { Box, Text, Button, Select, Input } = $.ui.resolve(e)
+    const list = await read($, voices)
+    const busy = await read($, voiceBusy)
+    const msg = await read($, voiceMsg)
+    return (
+      <Box flexDirection="column" gap={1}>
+        {list && (
+          <Box flexDirection="column">
+            <Select
+              key="voice-pick"
+              label="当前音色 "
+              options={list.voices.map(v => ({ value: v.id, label: v.name }))}
+              value={list.current}
+              onSelect={id => void pickVoice($, id)}
+            />
+            <Box flexDirection="row" gap={2}>
+              <Button key="voice-preview" label="🔊 试听" plain onPress={() => void previewVoice($)} />
+              <Button key="voice-remove" label="🗑 删除" plain dimColor onPress={() => void removeVoice($)} />
+            </Box>
+          </Box>
+        )}
+        <Box flexDirection="column">
+          <Text bold>添加音色</Text>
+          <Input
+            key="voice-id"
+            label="音色 ID "
+            placeholder="例如 ICL_uranus_zh_female_xingganmeihuo_tob"
+            value={await read($, draftId)}
+            submitLabel="验证"
+            onInput={v => void update($, draftId, () => v)}
+            onSubmit={v => void update($, draftId, () => v).then(() => addVoice($))}
+          />
+          <Input
+            key="voice-name"
+            label="名字   "
+            placeholder="可选，不填就用 ID"
+            value={await read($, draftName)}
+            submitLabel="验证"
+            onInput={v => void update($, draftName, () => v)}
+            onSubmit={v => void update($, draftName, () => v).then(() => addVoice($))}
+          />
+          <Button key="voice-add" label={busy ? '⏳ 验证中…' : '验证并保存'} onPress={() => void addVoice($)} />
+        </Box>
+        {msg ? <Text>{msg}</Text> : null}
+        <Text dimColor>音色 ID 在火山控制台「音色库」里找；验证会真的合成一句试听语（约 10 个字计费）。</Text>
+      </Box>
+    )
   })
 
   // 一轮结束：把这轮的最终回复记进名单，它下面才出现 🔊（子代理的回合不算）
@@ -340,6 +486,7 @@ export const register: Register = on => {
           <Button key="tts-restart" label="⟲" plain dimColor onPress={() => void start($, text, key)} />
           <Button key="tts-stop" label="⏹" plain dimColor onPress={() => void stopCurrent($)} />
           <Button key="tts-speed" label={speedLabel(x)} plain dimColor onPress={() => void pressSpeed($)} />
+          <Button key="tts-voice" label="🎙" plain dimColor onPress={() => void openVoicePane($)} />
         </Box>
       </Box>
     )

@@ -7,9 +7,32 @@ export type TtsNow = {
   mode: 'stream' | 'buffered'
 }
 
+/** 一个保存过的音色，和 ~/.config/volc-tts/voices.json 里的一项相同 */
+export type TtsVoice = {
+  id: string
+  name: string
+  /** 验证时试出来的资源：seed-tts-2.0（官方音色）或 seed-icl-2.0（声音复刻） */
+  resource: string
+}
+
+export type TtsVoiceList = {
+  current: string
+  voices: TtsVoice[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    /** finals：本会话每轮的最终回复（去掉多余空白后的全文），只有它们下面才画 🔊 */
-    tts: { now: TtsNow | null; speed: number; finals: string[] }
+    tts: {
+      now: TtsNow | null
+      speed: number
+      /** 本会话每轮的最终回复（去掉多余空白后的全文），只有它们下面才画 🔊 */
+      finals: string[]
+      /** 音色面板：音色列表（读自 voices.json）、两个输入框的草稿、提示语、是否正在验证 */
+      voices: TtsVoiceList | null
+      draftId: string
+      draftName: string
+      voiceMsg: string
+      voiceBusy: boolean
+    }
   }
 }
