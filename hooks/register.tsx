@@ -31,14 +31,15 @@ const voiceBusy = atom({ plugin: 'tts', key: 'voiceBusy' } as const, false)
 let run = 0
 let buffered: AbortController | null = null // 后备模式的停止开关
 
-// 把 Markdown 回复整理成适合朗读的纯文本；剩余的 Markdown 符号交给服务端过滤
+// 把 Markdown 回复整理成适合朗读的文字：代码块、表格略过；标题、分隔线、粗体行留着，stream.py 靠它们切节；
+// 剩余的 Markdown 符号交给服务端过滤
 function toSpeech(md: string): string {
   return md
     .replace(/```[\s\S]*?```/g, '（这里有一段代码，略过）')
+    .replace(/(?:^[ \t]*\|.*\|[ \t]*(?:\n|$))+/gm, '（这里有一个表格，略过）\n') // 表格念出来听不懂
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/https?:\/\/\S+/g, '链接')
-    .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
@@ -156,10 +157,11 @@ async function synth($: any, text: string): Promise<string> {
 // 改状态，同时更新状态栏：只留“🔊 火山朗读中”或“⏸ 已暂停”
 async function setNow($: any, value: TtsNow | null) {
   await update($, now, () => value)
-  $.ui.status(value === null ? undefined : value.status === 'paused' ? '⏸ 已暂停' : '🔊 火山朗读中')
+  const progress = value?.section && value.section.total > 1 ? ` ${value.section.index}/${value.section.total}` : ''
+  $.ui.status(value === null ? undefined : (value.status === 'paused' ? '⏸ 已暂停' : '🔊 火山朗读中') + progress)
 }
 
-// 遥控正在进行的流式朗读：pause / resume / stop / speed <x>
+// 遥控正在进行的流式朗读：pause / resume / stop / next / prev / speed <x>
 async function ctl($: any, ...args: string[]) {
   await $.process.run([PYTHON, `${$.plugin.root}/bin/ctl.py`, ...args])
 }
@@ -243,7 +245,12 @@ async function speakStreaming($: any, text: string, key: string, id: number) {
       out = out.slice(nl + 1)
       if (line === 'STATE playing' || line === 'STATE paused') {
         started = true
-        await setNow($, { key, status: line === 'STATE paused' ? 'paused' : 'playing', mode: 'stream' })
+        const section = (await read($, now))?.section
+        await setNow($, { key, status: line === 'STATE paused' ? 'paused' : 'playing', mode: 'stream', section })
+      } else if (line.startsWith('SECTION ')) {
+        const [index, total] = line.slice(8).split('/').map(Number)
+        const cur = await read($, now)
+        if (cur?.key === key && index && total) await setNow($, { ...cur, section: { index, total } })
       } else if (line.startsWith('SPEED ')) {
         const x = Number(line.slice(6))
         if (x) await update($, speed, () => x)
@@ -483,6 +490,12 @@ export const register: Register = on => {
             plain
             onPress={() => void pressMain($, text, key)}
           />
+          {(cur.section?.total ?? 1) > 1 && (
+            <Button key="tts-prev" label="⏮" plain dimColor onPress={() => void ctl($, 'prev')} />
+          )}
+          {(cur.section?.total ?? 1) > 1 && (
+            <Button key="tts-next" label="⏭" plain dimColor onPress={() => void ctl($, 'next')} />
+          )}
           <Button key="tts-restart" label="⟲" plain dimColor onPress={() => void start($, text, key)} />
           <Button key="tts-stop" label="⏹" plain dimColor onPress={() => void stopCurrent($)} />
           <Button key="tts-speed" label={speedLabel(x)} plain dimColor onPress={() => void pressSpeed($)} />

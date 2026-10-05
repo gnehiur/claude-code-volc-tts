@@ -5,6 +5,8 @@ export type TtsNow = {
   status: 'loading' | 'playing' | 'paused'
   /** stream：Python + mpv 流式；buffered：后备的整段合成 */
   mode: 'stream' | 'buffered'
+  /** 第几节 / 共几节（流式模式下由 stream.py 报告），例如 2/5 */
+  section?: { index: number; total: number }
 }
 
 /** 一个保存过的音色，和 ~/.config/volc-tts/voices.json 里的一项相同 */

@@ -20,6 +20,8 @@ const probe: Register = on => {
         />
         <Box flexDirection="row" gap={2}>
           <Button key="tts-main" label="⏸" plain onPress={() => {}} />
+          <Button key="tts-prev" label="⏮" plain dimColor onPress={() => {}} />
+          <Button key="tts-next" label="⏭" plain dimColor onPress={() => {}} />
           <Button key="tts-restart" label="⟲" plain dimColor onPress={() => {}} />
           <Button key="tts-stop" label="⏹" plain dimColor onPress={() => {}} />
           <Button key="tts-speed" label="1.5×" plain dimColor onPress={() => {}} />
@@ -41,7 +43,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   test(`下拉框和朗读中的整排按钮在 ${surface} 上能画出来`, { plugins: [{ name: 'probe', register: probe }] }, async $ => {
     const ui = await $.ui.mount({ plugin: 'probe', surface, component: 'Pane', requestId: 'probe', props: PANE_PROPS })
-    for (const q of [{ type: 'Select' }, { key: 'tts-main' }, { key: 'tts-voice' }, { text: '添加音色' }])
+    for (const q of [{ type: 'Select' }, { key: 'tts-main' }, { key: 'tts-prev' }, { key: 'tts-next' }, { key: 'tts-voice' }, { text: '添加音色' }])
       if (!(await ui.find(q as any))) throw new Error(`没画出 ${JSON.stringify(q)}`)
     await $.ui.select({ plugin: 'probe', key: 'voice-pick', value: 'a' })
   })
