@@ -102,7 +102,7 @@ bin/ctl.py ◀── ⏸ ▶️ ⏹ 倍速 按钮
 
 - mod 不能直接收发流式数据（`$.http.fetch` 要等全部内容收完才返回），所以"边收边播"交给一个本地 Python 脚本和 mpv。
 - `stream.py` 订阅 mpv 的暂停、倍速和播放位置，在 stdout 报告 `STATE playing|paused`、`SPEED x`、`SECTION 2/5`，mod 据此重画按钮和状态栏。
-- **按节合成**：每节单独请求、单独缓存，正在念第 k 节时预取到第 k+2 节（火山流式接口大约按实时速度返回，不预取的话跳过去要等）。跳节时停掉当前 mpv，从目标节的音频重新开一个，因为 mpv 读的是管道，不能往前跳。
+- **按节合成，语气连贯**：每节单独请求、单独缓存；同一次朗读的所有请求带同一个 `section_id`，由一个下载线程按顺序一次发一个，服务端据此记住前文，下一节接着前面的语气念（仅 2.0 音色和声音复刻 2.0 音色支持）。正在念第 k 节时预取到第 k+2 节（火山流式接口大约按实时速度返回，不预取的话跳过去要等）。跳节时停掉当前 mpv，从目标节的音频重新开一个，因为 mpv 读的是管道，不能往前跳。
 - 只给最终回复加按钮：用 `turn.complete` 事件里的 `answer` 认出每轮的最终文字；会话启动时用 `$.session.messages()` 补上历史回复。
 - 朗读前会去掉代码块、图片和链接网址；剩下的 Markdown 符号交给火山服务端过滤（`disable_markdown_filter`）。
 - `bin/ctl.py` 在终端里也能用：`python3 bin/ctl.py pause`、`python3 bin/ctl.py next`、`python3 bin/ctl.py speed 1.25`。

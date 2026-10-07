@@ -75,8 +75,15 @@ def iter_objects(resp):
             buf = buf[end:]
 
 
-def fetch(text, speaker, resource, key, out):
-    """流式合成 text，每收到一块 PCM 就调用 out(bytes)。出错抛 VolcError。"""
+def fetch(text, speaker, resource, key, out, section_id=None):
+    """流式合成 text，每收到一块 PCM 就调用 out(bytes)。出错抛 VolcError。
+
+    section_id：同一个 ID 的多次请求按顺序发出时，服务端会记住前面合成过的内容，
+    让后面的语气接得上（仅 2.0 音色和声音复刻 2.0 音色支持）。
+    """
+    additions = {'disable_markdown_filter': True, 'disable_emoji_filter': True}
+    if section_id:
+        additions['section_id'] = section_id
     req = urllib.request.Request(ENDPOINT, method='POST', headers={
         'X-Api-Key': key,
         'X-Api-Resource-Id': resource,
@@ -86,7 +93,7 @@ def fetch(text, speaker, resource, key, out):
         'text': text,
         'speaker': speaker,
         'audio_params': {'format': 'pcm', 'sample_rate': RATE},
-        'additions': json.dumps({'disable_markdown_filter': True, 'disable_emoji_filter': True}),
+        'additions': json.dumps(additions),
     }}).encode())
     with urllib.request.urlopen(req, timeout=30) as resp:
         for obj in iter_objects(resp):

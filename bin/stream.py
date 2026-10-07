@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 import volc
 
@@ -41,6 +42,7 @@ MIN_PARA_CHARS = 135  # 按段落切时，每节至少这么多字（1× 约 30 
 PREV_RESTART_SECONDS = 3  # ⏮：本节念了超过这么久就回本节开头，否则回上一节
 PAUSE_LIMIT = 30 * 60  # 暂停超过这么久自动结束
 PREFETCH = 2  # 正在念第 k 节时，提前下载到第 k+PREFETCH 节（火山流式接口大约按实时速度返回）
+# 连贯：同一次朗读的所有请求带同一个 section_id、一次只发一个、按顺序发，服务端就会接着前面的语气念
 RUN_DIR = volc.RUN_DIR
 PID_FILE = os.path.join(RUN_DIR, 'playing.pid')
 SOCK = os.path.join(RUN_DIR, 'mpv.sock')
@@ -305,15 +307,30 @@ class Narration:
         self.finished = threading.Event()
         self.errors = []
         self.reported = -1
+        self.section_id = str(uuid.uuid4())
+        self.want = (0, -1)  # 需要下载的节的范围（含两端），由播放位置决定
+        threading.Thread(target=self.download_worker, daemon=True).start()
 
-    # 下载：每节一个线程，按需开始（开始念、预取、跳过去时）；命中缓存就直接读文件
+    # 下载：只有一个下载线程，一次合成一节，按需挑选（正在念的节和后面 PREFETCH 节里最靠前的那个）。
+    # 一次只发一个请求、按顺序发，是 section_id 起作用的前提。命中缓存就直接读文件。
     def ensure(self, first, last=None):
-        for i in range(first, min(len(self.sections), (last if last is not None else first) + 1)):
+        with self.cond:
+            self.want = (first, last if last is not None else first)
+            self.cond.notify_all()
+
+    def download_worker(self):
+        while True:
             with self.cond:
-                if self.sections[i].started:
-                    continue
-                self.sections[i].started = True
-            threading.Thread(target=self.download, args=(i,), daemon=True).start()
+                while True:
+                    first, last = self.want
+                    todo = [i for i in range(first, min(len(self.sections), last + 1))
+                            if not self.sections[i].started]
+                    if todo:
+                        i = todo[0]
+                        self.sections[i].started = True
+                        break
+                    self.cond.wait(0.5)
+            self.download(i)
 
     def download(self, i):
         sec = self.sections[i]
@@ -336,7 +353,7 @@ class Narration:
 
                 for j, part in enumerate(split_requests(sec.text)):
                     log(f'请求第 {i + 1} 节第 {j + 1} 段（{len(part)} 字）')
-                    volc.fetch(part, self.speaker, self.resource, key, out)
+                    volc.fetch(part, self.speaker, self.resource, key, out, self.section_id)
                 tmp = f'{path}.{os.getpid()}.{i}.part'
                 with open(tmp, 'wb') as f:
                     f.write(sec.audio)
