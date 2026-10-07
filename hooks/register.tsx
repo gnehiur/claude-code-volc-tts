@@ -3,6 +3,8 @@ import type { Register } from 'claude-code'
 
 import type { TtsNow, TtsVoiceList } from '../types'
 
+import { toSpeech } from './speech'
+
 // 火山引擎豆包语音：单向流式合成（HTTP Chunked）
 const ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
 const DEFAULT_VOICE = { id: 'zh_female_zhixingnv_uranus_bigtts', resource: 'seed-tts-2.0' } // 知性女声 2.0
@@ -30,19 +32,6 @@ const voiceBusy = atom({ plugin: 'tts', key: 'voiceBusy' } as const, false)
 // 每次开始朗读加一；旧的朗读循环发现自己不是最新一轮，就不再改状态
 let run = 0
 let buffered: AbortController | null = null // 后备模式的停止开关
-
-// 把 Markdown 回复整理成适合朗读的文字：代码块、表格略过；标题、分隔线、粗体行留着，stream.py 靠它们切节；
-// 剩余的 Markdown 符号交给服务端过滤
-function toSpeech(md: string): string {
-  return md
-    .replace(/```[\s\S]*?```/g, '（这里有一段代码，略过）')
-    .replace(/(?:^[ \t]*\|.*\|[ \t]*(?:\n|$))+/gm, '（这里有一个表格，略过）\n') // 表格念出来听不懂
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/https?:\/\/\S+/g, '链接')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
 
 // 一段回复的指纹：同一段文字永远得到同一个 key
 function fingerprint(text: string): string {
