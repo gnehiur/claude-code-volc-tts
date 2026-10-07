@@ -407,6 +407,9 @@ class Narration:
             self.player = subprocess.Popen(
                 [MPV, '--no-video', '--really-quiet', '--no-terminal', '--cache=no',
                  f'--input-ipc-server={SOCK}', f'--speed={read_speed():g}',
+                 # 输出成立体声：有的扬声器（如 Mac mini 内置）不接受单声道，CoreAudio 报 -50，
+                 # mpv 退到 avfoundation 后会提前结束、声音念不完
+                 '--audio-channels=stereo',
                  '--demuxer=rawaudio', '--demuxer-rawaudio-format=s16le',
                  f'--demuxer-rawaudio-rate={RATE}', '--demuxer-rawaudio-channels=1', '-'],
                 stdin=subprocess.PIPE)
