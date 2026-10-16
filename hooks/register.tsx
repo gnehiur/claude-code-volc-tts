@@ -16,6 +16,7 @@ const FIRST_CHARS = 60 // 后备方案第一段的字数上限
 const PYTHON = '/usr/bin/python3'
 const SPEEDS = [1, 1.25, 1.5, 2] // 倍速按钮依次循环
 const VOICE_PANE = 'tts-voice'
+const COMMAND = 'tts' // 打开音色面板的斜杠命令；原来叫 /voice，被引擎内置命令占了
 const SAMPLE_KEY = 'voice-sample' // 试听用的朗读，不属于任何一段回复
 
 // 会话级状态：哪一段在念、什么状态；当前倍速。写入会让读它的按钮重画
@@ -374,11 +375,16 @@ export const register: Register = on => {
     $.ui.status(undefined)
     await loadSpeed($)
     await loadHistoryFinals($)
-    await $.command.register({ name: 'voice', description: '打开朗读音色面板：切换、试听、添加火山音色' })
+    // 命令名可能被引擎占用（2.1.29x 内置了 /voice），注册失败只影响这一个命令，不连累整个启动钩子
+    try {
+      await $.command.register({ name: COMMAND, description: '打开朗读音色面板：切换、试听、添加火山音色' })
+    } catch (err) {
+      $.ui.toast(`/${COMMAND} 被占用，改用朗读时的 🎙 按钮打开音色面板（${(err as Error).message.slice(0, 80)}）`)
+    }
     return started
   })
 
-  on('command.run', { command: 'voice' }, async $ => {
+  on('command.run', { command: 'tts' }, async $ => {
     await openVoicePane($)
     return { text: '已打开朗读音色面板。' }
   })
